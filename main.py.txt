@@ -1,0 +1,188 @@
+import os
+import sys
+import requests
+from bs4 import BeautifulSoup
+from flask import Flask, request, abort
+from linebot import LineBotApi, WebhookHandler
+from linebot.exceptions import InvalidSignatureError
+from linebot.models import (
+    MessageEvent, TextMessage, TextSendMessage, FlexSendMessage
+)
+
+# ==========================================
+# 1. 全域設定區 (改用環境變數)
+# ==========================================
+
+app = Flask(__name__)
+
+# 從環境變數讀取 Token (等等會在 Render 設定)
+LINE_CHANNEL_ACCESS_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
+LINE_CHANNEL_SECRET = os.environ.get('LINE_CHANNEL_SECRET')
+
+if LINE_CHANNEL_ACCESS_TOKEN is None or LINE_CHANNEL_SECRET is None:
+    print("錯誤：未設定 LINE Token 環境變數")
+    sys.exit(1)
+
+line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
+handler = WebhookHandler(LINE_CHANNEL_SECRET)
+
+# 目標網址
+TARGET_URL = "https://summercamp.luckertw.com/"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+}
+
+# 全域資料庫
+CAMP_DATABASE = []
+
+# ==========================================
+# 2. 爬蟲邏輯
+# ==========================================
+class CampScraper:
+    def __init__(self, url):
+        self.url = url
+        self.data_list = []
+
+    def fetch_page(self):
+        print(f"正在連線至: {self.url} ...")
+        try:
+            response = requests.get(self.url, headers=HEADERS, timeout=10)
+            response.encoding = 'utf-8'
+            return response.text if response.status_code == 200 else None
+        except Exception as e:
+            print(f"連線錯誤: {e}")
+            return None
+
+    def parse_html(self, html_content):
+        if not html_content: return
+        soup = BeautifulSoup(html_content, 'html.parser')
+        events = soup.find_all('div', class_=lambda x: x and ('col-md' in x or 'card' in x))
+
+        if not events: return
+
+        for event in events:
+            try:
+                title_tag = event.find(['h5', 'h4', 'h3', 'b', 'strong'])
+                if not title_tag:
+                    title_tag = event.find('div', class_=lambda x: x and 'title' in x)
+                title = title_tag.text.strip() if title_tag else "無標題"
+
+                if len(title) < 4: continue
+
+                link_tag = event.find('a')
+                link = link_tag['href'] if link_tag else "#"
+                if link != "#" and not link.startswith('http'):
+                    link = "https://summercamp.luckertw.com" + link
+
+                img_tag = event.find('img')
+                image_url = img_tag['src'] if (img_tag and 'src' in img_tag.attrs) else ""
+                if image_url and not image_url.startswith('http'):
+                    image_url = "https://summercamp.luckertw.com" + image_url
+                
+                if not image_url:
+                    image_url = "https://images.unsplash.com/photo-1517486808906-6ca8b3f04846?auto=format&fit=crop&w=600&q=80"
+
+                full_text = event.get_text(strip=True)
+                date = "2025/2026 寒假" if "202" in full_text else "近期活動"
+
+                self.data_list.append({
+                    "title": title,
+                    "date": date,
+                    "price": "詳見官網",
+                    "region": "全台",
+                    "url": link,
+                    "image": image_url,
+                    "tags": ["熱門營隊"]
+                })
+            except:
+                continue
+
+# ==========================================
+# 3. LINE Flex Message
+# ==========================================
+def create_camp_flex_message(camps):
+    bubbles = []
+    for camp in camps[:10]:
+        bubble = {
+            "type": "bubble",
+            "hero": {
+                "type": "image", "url": camp['image'], "size": "full",
+                "aspectRatio": "20:13", "aspectMode": "cover",
+                "action": { "type": "uri", "uri": camp['url'] }
+            },
+            "body": {
+                "type": "box", "layout": "vertical",
+                "contents": [
+                    { "type": "text", "text": camp['title'], "weight": "bold", "size": "xl", "wrap": True },
+                    {
+                        "type": "box", "layout": "baseline", "margin": "md",
+                        "contents": [
+                            { "type": "text", "text": camp['price'], "weight": "bold", "size": "lg", "color": "#1DB446", "flex": 0 },
+                            { "type": "text", "text": f" | {camp['date']}", "size": "sm", "color": "#999999", "flex": 1, "align": "end" }
+                        ]
+                    }
+                ]
+            },
+            "footer": {
+                "type": "box", "layout": "vertical", "spacing": "sm",
+                "contents": [
+                    { "type": "button", "style": "primary", "height": "sm", "action": { "type": "uri", "label": "查看詳情", "uri": camp['url'] } }
+                ]
+            }
+        }
+        bubbles.append(bubble)
+    return FlexSendMessage(alt_text="營隊搜尋結果", contents={"type": "carousel", "contents": bubbles}) if bubbles else None
+
+# ==========================================
+# 4. Flask Server 邏輯
+# ==========================================
+def update_camp_database():
+    global CAMP_DATABASE
+    scraper = CampScraper(TARGET_URL)
+    html = scraper.fetch_page()
+    if html:
+        scraper.parse_html(html)
+        CAMP_DATABASE = scraper.data_list
+        print(f"資料庫更新完成，共 {len(CAMP_DATABASE)} 筆")
+
+@app.route("/callback", methods=['POST'])
+def callback():
+    signature = request.headers['X-Line-Signature']
+    body = request.get_data(as_text=True)
+    try:
+        handler.handle(body, signature)
+    except InvalidSignatureError:
+        abort(400)
+    return 'OK'
+
+@app.route("/", methods=['GET']) # 增加一個根目錄檢查，避免 Render 報錯
+def home():
+    return "LINE Bot is Running!"
+
+@handler.add(MessageEvent, message=TextMessage)
+def handle_message(event):
+    msg = event.message.text.strip()
+    
+    if msg == "更新資料":
+        update_camp_database()
+        reply_text = f"資料庫已更新！目前有 {len(CAMP_DATABASE)} 筆營隊資訊。"
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
+        return
+
+    if not CAMP_DATABASE:
+        update_camp_database()
+
+    found_camps = []
+    keywords = msg.split()
+    for camp in CAMP_DATABASE:
+        if any(k in camp['title'] for k in keywords) or any(k in camp['date'] for k in keywords):
+            found_camps.append(camp)
+
+    if found_camps:
+        line_bot_api.reply_message(event.reply_token, create_camp_flex_message(found_camps))
+    else:
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"找不到「{msg}」。(目前資料庫: {len(CAMP_DATABASE)}筆)"))
+
+if __name__ == "__main__":
+    # 本機測試用，雲端不會執行這行
+    app.run(port=5000, debug=True)
