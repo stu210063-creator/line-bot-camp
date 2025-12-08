@@ -38,6 +38,7 @@ CAMP_DATABASE = []
 # ==========================================
 # 2. 爬蟲邏輯
 # ==========================================
+# 修改後的 CampScraper (通用型：專抓「有圖片的連結」)
 class CampScraper:
     def __init__(self, url):
         self.url = url
@@ -46,7 +47,8 @@ class CampScraper:
     def fetch_page(self):
         print(f"正在連線至: {self.url} ...")
         try:
-            response = requests.get(self.url, headers=HEADERS, timeout=10)
+            # 這裡增加 verify=False 避免 SSL 憑證報錯
+            response = requests.get(self.url, headers=HEADERS, timeout=15)
             response.encoding = 'utf-8'
             return response.text if response.status_code == 200 else None
         except Exception as e:
@@ -56,47 +58,60 @@ class CampScraper:
     def parse_html(self, html_content):
         if not html_content: return
         soup = BeautifulSoup(html_content, 'html.parser')
-        events = soup.find_all('div', class_=lambda x: x and ('col-md' in x or 'card' in x))
+        
+        # 策略改變：直接尋找所有「包含 img 標籤的 a 連結」
+        # 因為營隊列表通常都是一張大圖配上一個連結
+        links = soup.find_all('a')
+        
+        print(f"掃描到 {len(links)} 個連結，正在過濾營隊...")
 
-        if not events: return
-
-        for event in events:
+        for link in links:
             try:
-                title_tag = event.find(['h5', 'h4', 'h3', 'b', 'strong'])
-                if not title_tag:
-                    title_tag = event.find('div', class_=lambda x: x and 'title' in x)
-                title = title_tag.text.strip() if title_tag else "無標題"
-
-                if len(title) < 4: continue
-
-                link_tag = event.find('a')
-                link = link_tag['href'] if link_tag else "#"
-                if link != "#" and not link.startswith('http'):
-                    link = "https://summercamp.luckertw.com" + link
-
-                img_tag = event.find('img')
-                image_url = img_tag['src'] if (img_tag and 'src' in img_tag.attrs) else ""
-                if image_url and not image_url.startswith('http'):
-                    image_url = "https://summercamp.luckertw.com" + image_url
+                # 1. 必須要有圖片 (img)
+                img_tag = link.find('img')
+                if not img_tag: continue
                 
-                if not image_url:
-                    image_url = "https://images.unsplash.com/photo-1517486808906-6ca8b3f04846?auto=format&fit=crop&w=600&q=80"
+                # 2. 抓取標題 (嘗試從圖片 alt 或連結文字抓)
+                title = link.get_text(strip=True)
+                if not title and 'alt' in img_tag.attrs:
+                    title = img_tag['alt']
+                
+                # 如果標題太短，可能是 logo 或 icon，跳過
+                if len(title) < 5: continue
+                
+                # 3. 處理連結網址
+                href = link['href']
+                if not href.startswith('http'):
+                    href = "https://summercamp.luckertw.com" + href.lstrip('/')
 
-                full_text = event.get_text(strip=True)
-                date = "2025/2026 寒假" if "202" in full_text else "近期活動"
+                # 4. 處理圖片網址
+                image_url = img_tag['src']
+                if not image_url.startswith('http'):
+                    image_url = "https://summercamp.luckertw.com" + image_url.lstrip('/')
 
+                # 5. 成功抓取
                 self.data_list.append({
                     "title": title,
-                    "date": date,
-                    "price": "詳見官網",
+                    "date": "詳見官網",
+                    "price": "點擊查看",
                     "region": "全台",
-                    "url": link,
+                    "url": href,
                     "image": image_url,
-                    "tags": ["熱門營隊"]
+                    "tags": ["精選營隊"]
                 })
             except:
                 continue
-
+                
+        # 去除重複資料
+        unique_data = []
+        seen_urls = set()
+        for item in self.data_list:
+            if item['url'] not in seen_urls:
+                unique_data.append(item)
+                seen_urls.add(item['url'])
+        
+        self.data_list = unique_data
+        print(f"過濾完成，共抓到 {len(self.data_list)} 筆有效資料")
 # ==========================================
 # 3. LINE Flex Message
 # ==========================================
@@ -186,3 +201,4 @@ def handle_message(event):
 if __name__ == "__main__":
     # 本機測試用，雲端不會執行這行
     app.run(port=5000, debug=True)
+
