@@ -59,10 +59,10 @@ class CampScraper:
         try:
             self.data_list = [] # 清空暫存
             
-            # 1. 抓取 KKTIX (針對高中/大學營隊)
-            self.scrape_kktix(keyword="大學營隊")
-            self.scrape_kktix(keyword="高中體驗營")
-            self.scrape_kktix(keyword="高中營隊")
+            # 1. 抓取 lucker (針對高中/大學營隊)
+            self.scrape_lucker(keyword="大學營隊")
+            self.scrape_lucker(keyword="高中體驗營")
+            self.scrape_lucker(keyword="高中營隊")
             
             # 2. 抓取 BeClass (針對學術/志工)
             self.scrape_beclass(keyword="高中營隊")
@@ -89,9 +89,9 @@ class CampScraper:
         finally:
             IS_UPDATING = False
 
-    def scrape_kktix(self, keyword):
-        print(f"🔍 搜尋 KKTIX: {keyword}...")
-        url = f"https://kktix.com/events?search={keyword}&start_at=2024-01-01&end_at=2026-12-31"
+    def scrape_lucker(self, keyword):
+        print(f"🔍 搜尋 lucker: {keyword}...")
+        url = f"https://summercamp.luckertw.com/"
         try:
             res = requests.get(url, headers=HEADERS, timeout=10)
             soup = BeautifulSoup(res.text, 'html.parser')
@@ -101,7 +101,7 @@ class CampScraper:
                 try:
                     title = event.select_one('h2').get_text(strip=True)
                     link = event.select_one('a')['href']
-                    if not link.startswith('http'): link = "https://kktix.com" + link
+                    if not link.startswith('http'): link = "https://summercamp.luckertw.com/" + link
                     
                     time_tag = event.select_one('.date')
                     date_str = time_tag.get_text(strip=True) if time_tag else "詳見官網"
@@ -113,13 +113,13 @@ class CampScraper:
                     self.data_list.append({
                         "title": title,
                         "date": date_str,
-                        "source": "KKTIX",
+                        "source": "lucker",
                         "url": link,
                         "image": img_url
                     })
                 except: continue
         except Exception as e:
-            print(f"KKTIX 錯誤: {e}")
+            print(f"lucker 錯誤: {e}")
 
     def scrape_beclass(self, keyword):
         print(f"🔍 搜尋 BeClass: {keyword}...")
@@ -175,7 +175,7 @@ def create_flex_message(camps):
     bubbles = []
     # 取前 12 筆顯示
     for camp in camps[:12]:
-        color = "#E64A19" if camp['source'] == "KKTIX" else "#1976D2"
+        color = "#E64A19" if camp['source'] == "lucker" else "#1976D2"
         bubble = {
             "type": "bubble",
             "hero": {
@@ -265,3 +265,4 @@ def handle_message(event):
 
 if __name__ == "__main__":
     app.run(port=5000)
+
