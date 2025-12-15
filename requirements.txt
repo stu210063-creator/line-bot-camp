@@ -4,3 +4,6 @@ pandas
 requests
 beautifulsoup4
 gunicorn
+streamlit
+pandas
+st-gsheets-connection
